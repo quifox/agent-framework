@@ -1864,8 +1864,9 @@ class BaseVectorSearch(_VectorStoreRecordHandler[KeyT, ModelT], ABC):
         """Convert raw connector results into deserialized search responses."""
 
         async def generate() -> AsyncIterator[SearchResponse[ModelT]]:
+            result_iterator = _as_async_iterable(results)
             try:
-                async for result in _as_async_iterable(results):
+                async for result in result_iterator:
                     try:
                         record = self.deserialize(
                             self._get_record_from_result(result),
@@ -1889,6 +1890,10 @@ class BaseVectorSearch(_VectorStoreRecordHandler[KeyT, ModelT], ABC):
                 raise
             except Exception as exc:
                 raise IntegrationException(f"Vector search iteration failed: {exc}") from exc
+            finally:
+                close = getattr(result_iterator, "aclose", None)
+                if close is not None:
+                    await close()
 
         return generate()
 
@@ -2664,17 +2669,23 @@ def create_vector_search_tool(
             )
         mapped_results: list[Content] = []
         consumed_results = 0
-        async for result in results:
-            if consumed_results >= invocation_top:
-                break
-            consumed_results += 1
-            mapped = map_result(result)
-            if isinstance(mapped, str):
-                mapped_results.append(Content.from_text(mapped))
-            elif isinstance(mapped, Content):
-                mapped_results.append(mapped)
-            else:
-                mapped_results.extend(mapped)
+        result_iterator = results.__aiter__()
+        try:
+            async for result in result_iterator:
+                if consumed_results >= invocation_top:
+                    break
+                consumed_results += 1
+                mapped = map_result(result)
+                if isinstance(mapped, str):
+                    mapped_results.append(Content.from_text(mapped))
+                elif isinstance(mapped, Content):
+                    mapped_results.append(mapped)
+                else:
+                    mapped_results.extend(mapped)
+        finally:
+            close = getattr(result_iterator, "aclose", None)
+            if close is not None:
+                await close()
         return mapped_results
 
     return FunctionTool(
@@ -2694,8 +2705,14 @@ async def _as_async_iterable(
     values: AsyncIterable[ResultT] | Sequence[ResultT],
 ) -> AsyncIterator[ResultT]:
     if isinstance(values, AsyncIterable):
-        async for value in values:
-            yield value
+        iterator = values.__aiter__()
+        try:
+            async for value in iterator:
+                yield value
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
         return
     for value in values:
         yield value

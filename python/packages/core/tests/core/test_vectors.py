@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import warnings
-from collections.abc import AsyncIterable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, dataclass, field
 from decimal import Decimal
@@ -1555,6 +1555,30 @@ async def test_create_search_tool_enforces_paging_limits_and_result_cap() -> Non
             collection,
             filter=Filter("text", "eq", Param("category", Literal["travel", "work"], required=True)),
         )(query="records", category="other")
+
+
+async def test_create_search_tool_closes_results_when_result_cap_is_reached() -> None:
+    collection = MockCollection()
+    closed = False
+
+    async def raw_results() -> AsyncIterator[dict[str, Any]]:
+        nonlocal closed
+        try:
+            for index in range(3):
+                yield {
+                    "record": {"record_id": str(index), "body": f"record {index}"},
+                    "score": 0.9,
+                }
+        finally:
+            closed = True
+
+    collection.raw_search_results = raw_results()
+    tool = create_vector_search_tool(collection, top=2)
+
+    results = await tool(query="records")
+
+    assert len(results) == 2
+    assert closed
 
 
 async def test_create_search_tool_supports_multimodal_results() -> None:
